@@ -153,16 +153,26 @@ export default function DoseRecordEntry({
         const base64String = reader.result as string;
         setUploadProgressMsg("กำลังประมวลผลด้วย Gemini AI (วิเคราะห์เอกสารแบบ OCR และจำแนกฟิลด์)...");
 
-        const response = await fetch("/api/parse-pdf", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            pdfBase64: base64String,
-            fileName: file.name,
-          }),
-        });
+        let response;
+        try {
+          response = await fetch("/api/parse-pdf", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              pdfBase64: base64String,
+              fileName: file.name,
+            }),
+          });
+        } catch (fetchErr) {
+          throw new Error("ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์หลังบ้านได้ หากท่านกำลังใช้งานอยู่บน GitHub Pages ระบบจะไม่สามารถประมวลผล PDF ได้เนื่องจากเป็นโฮสติ้งแบบ Static กรุณาใช้วิธี 'กรอกข้อมูลด้วยตนเอง (Manual Entry)' หรือย้ายไปโฮสต์บน Render.com / Railway.app แทน");
+        }
+
+        const contentType = response.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          throw new Error("ได้รับข้อมูลตอบกลับที่ไม่ได้อยู่ในรูปแบบ JSON จากเซิร์ฟเวอร์ (อาจเกิดจากการอัปโหลดบนระบบโฮสต์ที่ไม่รองรับ Backend Node.js เช่น GitHub Pages) กรุณากรอกข้อมูลโดยคลิกปุ่ม 'กรอกข้อมูลด้วยตนเอง (Manual Entry)' หรือรันเซิร์ฟเวอร์แบบ Full-Stack");
+        }
 
         if (!response.ok) {
           const errData = await response.json();
