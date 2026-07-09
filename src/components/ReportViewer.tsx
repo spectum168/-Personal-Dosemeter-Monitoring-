@@ -45,6 +45,7 @@ export default function ReportViewer({ department, employees, records, databaseS
   const [selectedPeriod, setSelectedPeriod] = useState<string>("ทั้งปี (Cumulative Annual)");
   const [calculationMode, setCalculationMode] = useState<"avg" | "sum" | "both">("both");
   const [isInIframe, setIsInIframe] = useState(false);
+  const [reportType, setReportType] = useState<"standard" | "fiveYear">("standard");
 
   React.useEffect(() => {
     try {
@@ -53,6 +54,11 @@ export default function ReportViewer({ department, employees, records, databaseS
       setIsInIframe(true);
     }
   }, []);
+
+  // Years for the 5-year report lookup
+  const yearsList = useMemo(() => {
+    return [selectedYear - 4, selectedYear - 3, selectedYear - 2, selectedYear - 1, selectedYear];
+  }, [selectedYear]);
 
   // Generate table rows based on filters, merging duplicate employees of the same physical person
   const reportRows = useMemo(() => {
@@ -136,6 +142,69 @@ export default function ReportViewer({ department, employees, records, databaseS
     }).sort((a, b) => b.deepDose - a.deepDose); // highest cumulative dose first
   }, [deptEmployees, deptRecords, selectedYear, selectedPeriod, department]);
 
+  // Generate 5-Year historical rows
+  const report5YearRows = useMemo(() => {
+    const normalizeName = (name: string): string => {
+      return name
+        .replace(/^(นาย|นางสาว|นาง|ดร\.|นพ\.|พญ\.|นายแพทย์|แพทย์หญิง|Mr\.|Mrs\.|Ms\.)\s*/, "")
+        .trim()
+        .replace(/\s+/g, "")
+        .toLowerCase();
+    };
+
+    // 1. Group employees by normalized name
+    const groupedEmployees: { [key: string]: Employee[] } = {};
+    deptEmployees.forEach((emp) => {
+      const key = normalizeName(emp.name);
+      if (!groupedEmployees[key]) {
+        groupedEmployees[key] = [];
+      }
+      groupedEmployees[key].push(emp);
+    });
+
+    return Object.entries(groupedEmployees).map(([key, emps]) => {
+      const activeEmp = emps.find(e => e.status === "active") || emps[0];
+      const empIds = emps.map((e) => e.id);
+
+      // Find all records matching any of these employee IDs in the 5-year range
+      const empRecords = deptRecords.filter((r) => empIds.includes(r.employeeId) && yearsList.includes(r.year));
+
+      // Calculate sum for each of the 5 years
+      const yearlyDoses = yearsList.map((yr) => {
+        const yrRecords = empRecords.filter((r) => r.year === yr);
+        const deep = yrRecords.reduce((sum, r) => sum + r.deepDose, 0);
+        const shallow = yrRecords.reduce((sum, r) => sum + r.shallowDose, 0);
+        return { year: yr, deep, shallow };
+      });
+
+      const totalDeep = yearlyDoses.reduce((sum, yd) => sum + yd.deep, 0);
+      const totalShallow = yearlyDoses.reduce((sum, yd) => sum + yd.shallow, 0);
+
+      // 5-Year Safety limits: Max 100 mSv cumulative, and no single year above 50 mSv
+      let status: "safe" | "watch" | "danger" = "safe";
+      const hasAnyYearExceeding50 = yearlyDoses.some(yd => yd.deep >= 50);
+      const hasAnyYearExceeding20 = yearlyDoses.some(yd => yd.deep >= department.annualLimit);
+
+      if (totalDeep >= 100 || hasAnyYearExceeding50) {
+        status = "danger";
+      } else if (totalDeep >= 50 || hasAnyYearExceeding20) {
+        status = "watch";
+      }
+
+      // Combine badge IDs in case of duplicates
+      const badgeIds = Array.from(new Set(emps.map((e) => e.employeeIdCode))).join(", ");
+
+      return {
+        employee: activeEmp,
+        badgeIds,
+        yearlyDoses,
+        totalDeep,
+        totalShallow,
+        status,
+      };
+    }).sort((a, b) => b.totalDeep - a.totalDeep); // highest 5-year cumulative dose first
+  }, [deptEmployees, deptRecords, yearsList, department]);
+
   const triggerPrint = () => {
     window.print();
   };
@@ -145,14 +214,51 @@ export default function ReportViewer({ department, employees, records, databaseS
       {/* Printable CSS Helper */}
       <style>{`
         @media print {
-          body {
+          @page {
+            size: A4 portrait;
+            margin: 1.5cm 1.5cm 1.8cm 1.5cm;
+          }
+          
+          /* Override scrolling, height, and clipping rules on root, body and parent containers */
+          html, body {
+            height: auto !important;
+            min-height: 100% !important;
+            overflow: visible !important;
             background: white !important;
             color: black !important;
             font-size: 11px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
           }
+
+          /* Unroll all layout limitations from App.tsx */
+          #root,
+          #root > div,
+          #root > div > div,
+          main,
+          .flex-1 {
+            height: auto !important;
+            min-height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            display: block !important;
+            position: relative !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border: none !important;
+            box-shadow: none !important;
+            background: transparent !important;
+            width: 100% !important;
+            flex: none !important;
+          }
+
           .no-print {
             display: none !important;
           }
+
+          /* Ensure report container expands fully to A4 printable area width */
           .print-container {
             border: none !important;
             box-shadow: none !important;
@@ -160,35 +266,85 @@ export default function ReportViewer({ department, employees, records, databaseS
             margin: 0 !important;
             width: 100% !important;
             max-width: 100% !important;
+            background: white !important;
+            display: block !important;
           }
+
           table {
             page-break-inside: auto;
             width: 100% !important;
             border-collapse: collapse !important;
+            margin-top: 15px !important;
+            margin-bottom: 15px !important;
           }
+
           tr {
             page-break-inside: avoid;
             page-break-after: auto;
           }
-          th, td {
-            border: 1px solid #000 !important;
-            padding: 6px 8px !important;
+
+          th {
+            background-color: #f8fafc !important;
+            color: #0f172a !important;
+            border: 1px solid #94a3b8 !important;
+            padding: 8px 10px !important;
+            font-weight: bold !important;
+            text-align: center !important;
           }
+
+          td {
+            border: 1px solid #cbd5e1 !important;
+            padding: 8px 10px !important;
+            color: #1e293b !important;
+          }
+
           thead {
             display: table-header-group;
           }
         }
       `}</style>
 
+      {/* Tab Switcher (no-print) */}
+      <div className="flex bg-slate-100 p-1 rounded-xl w-fit border border-slate-200 no-print">
+        <button
+          onClick={() => setReportType("standard")}
+          className={`px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+            reportType === "standard"
+              ? "bg-white text-slate-950 shadow-sm"
+              : "text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          📄 รายงานสรุปประจำงวด/รายปี
+        </button>
+        <button
+          onClick={() => setReportType("fiveYear")}
+          className={`px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+            reportType === "fiveYear"
+              ? "bg-white text-slate-950 shadow-sm"
+              : "text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          🕒 รายงานสรุปสะสมย้อนหลัง 5 ปี
+        </button>
+      </div>
+
       {/* Control Panel (no-print) */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3 no-print">
         <div className="space-y-0.5">
-          <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider">สร้างรายงานทางการแผนก</h2>
-          <p className="text-[11px] text-slate-500 font-medium">เลือกช่วงระยะเวลาเพื่อจัดทำรายงานปริมาณรังสีที่สามารถพิมพ์หรือบันทึกเป็น PDF ได้</p>
+          <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+            {reportType === "fiveYear" ? "สร้างรายงานสะสม 5 ปี" : "สร้างรายงานทางการแผนก"}
+          </h2>
+          <p className="text-[11px] text-slate-500 font-medium">
+            {reportType === "fiveYear" 
+              ? "ดูรายงานประวัติรังสีสะสมย้อนหลัง 5 ปีก่อนหน้า และพิมพ์รายงาน / บันทึกเป็น PDF" 
+              : "เลือกช่วงระยะเวลาเพื่อจัดทำรายงานปริมาณรังสีที่สามารถพิมพ์หรือบันทึกเป็น PDF ได้"}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-1.5 text-xs">
-            <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">เลือกปี พ.ศ.</span>
+            <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+              {reportType === "fiveYear" ? "เลือกปีฐาน (Base Year)" : "เลือกปี พ.ศ."}
+            </span>
             <select
               value={selectedYear}
               onChange={(e) => {
@@ -205,34 +361,42 @@ export default function ReportViewer({ department, employees, records, databaseS
             </select>
           </div>
 
-          <div className="flex items-center gap-1.5 text-xs">
-            <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">รอบระยะเวลา</span>
-            <select
-              value={selectedPeriod}
-              onChange={(e) => setSelectedPeriod(e.target.value)}
-              className="bg-slate-50 border border-slate-200 p-2 rounded-md text-slate-800 focus:outline-blue-500 font-bold text-xs"
-            >
-              {availablePeriods.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </div>
+          {reportType !== "fiveYear" ? (
+            <>
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">รอบระยะเวลา</span>
+                <select
+                  value={selectedPeriod}
+                  onChange={(e) => setSelectedPeriod(e.target.value)}
+                  className="bg-slate-50 border border-slate-200 p-2 rounded-md text-slate-800 focus:outline-blue-500 font-bold text-xs"
+                >
+                  {availablePeriods.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-          <div className="flex items-center gap-1.5 text-xs">
-            <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">รูปแบบข้อมูลที่แสดง</span>
-            <select
-              value={calculationMode}
-              onChange={(e) => setCalculationMode(e.target.value as "both" | "sum" | "avg")}
-              className="bg-slate-50 border border-slate-200 p-2 rounded-md text-slate-800 focus:outline-blue-500 font-bold text-xs"
-              title="เลือกแสดงเฉพาะค่าสะสม, เฉพาะค่าเฉลี่ย หรือแสดงทั้งสองแบบคู่กัน"
-            >
-              <option value="both">แสดงทั้ง "สะสม" และ "ค่าเฉลี่ย"</option>
-              <option value="avg">แสดงเฉพาะ "ค่าเฉลี่ยต่อรอบ" (Average)</option>
-              <option value="sum">แสดงเฉพาะ "ค่าสะสมรวม" (Cumulative Sum)</option>
-            </select>
-          </div>
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">รูปแบบข้อมูลที่แสดง</span>
+                <select
+                  value={calculationMode}
+                  onChange={(e) => setCalculationMode(e.target.value as "both" | "sum" | "avg")}
+                  className="bg-slate-50 border border-slate-200 p-2 rounded-md text-slate-800 focus:outline-blue-500 font-bold text-xs"
+                  title="เลือกแสดงเฉพาะค่าสะสม, เฉพาะค่าเฉลี่ย หรือแสดงทั้งสองแบบคู่กัน"
+                >
+                  <option value="both">แสดงทั้ง "สะสม" และ "ค่าเฉลี่ย"</option>
+                  <option value="avg">แสดงเฉพาะ "ค่าเฉลี่ยต่อรอบ" (Average)</option>
+                  <option value="sum">แสดงเฉพาะ "ค่าสะสมรวม" (Cumulative Sum)</option>
+                </select>
+              </div>
+            </>
+          ) : (
+            <div className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 px-3 py-2 rounded-md font-medium">
+              ช่วงปีวิเคราะห์: <strong className="text-slate-800">พ.ศ. {selectedYear - 4} ถึง {selectedYear}</strong>
+            </div>
+          )}
 
           <button
             onClick={triggerPrint}
@@ -342,12 +506,22 @@ export default function ReportViewer({ department, employees, records, databaseS
               RAD SAFE
             </div>
           )}
-          <h1 className="text-sm font-bold text-slate-950 uppercase tracking-wide">รายงานสรุปผลการวัดรังสีบุคคลประจำหน่วยงาน</h1>
+          <h1 className="text-sm font-bold text-slate-950 uppercase tracking-wide">
+            {reportType === "fiveYear" 
+              ? "รายงานสรุปประวัติปริมาณรังสีสะสมย้อนหลัง 5 ปี (Hp(10) Deep Dose)" 
+              : "รายงานสรุปผลการวัดรังสีบุคคลประจำหน่วยงาน"}
+          </h1>
           <h2 className="text-xs font-bold text-slate-800">{department.hospitalName}</h2>
           <p className="text-[11px] text-slate-600 font-bold">
             หน่วยงาน: <span className="text-slate-900">{department.name}</span> • 
-            รอบระยะเวลา: <span className="text-slate-900">{selectedPeriod}</span> • 
-            ปีประเมิน: <span className="text-slate-900">พ.ศ. {selectedYear}</span>
+            {reportType === "fiveYear" ? (
+              <span>ช่วงปีประเมิน: <span className="text-slate-900">พ.ศ. {selectedYear - 4} - พ.ศ. {selectedYear} (รวม 5 ปีสะสม)</span></span>
+            ) : (
+              <>
+                รอบระยะเวลา: <span className="text-slate-900">{selectedPeriod}</span> • 
+                ปีประเมิน: <span className="text-slate-900">พ.ศ. {selectedYear}</span>
+              </>
+            )}
           </p>
         </div>
 
@@ -355,11 +529,19 @@ export default function ReportViewer({ department, employees, records, databaseS
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-200 no-print">
           <div className="flex items-center gap-2 font-medium">
             <FileCheck className="size-4 text-emerald-600" />
-            <span>เกณฑ์รังสีสะสมประจำปีสูงสุด: <strong>{department.annualLimit.toFixed(2)} mSv</strong></span>
+            {reportType === "fiveYear" ? (
+              <span>ขีดจำกัดรังสีสะสม 5 ปีสูงสุด: <strong>100.00 mSv</strong></span>
+            ) : (
+              <span>เกณฑ์รังสีสะสมประจำปีสูงสุด: <strong>{department.annualLimit.toFixed(2)} mSv</strong></span>
+            )}
           </div>
           <div className="flex items-center gap-2 font-medium">
             <AlertTriangle className="size-4 text-amber-500" />
-            <span>เกณฑ์เฝ้าระวังรายรอบ: <strong>{department.alertLimit.toFixed(2)} mSv</strong></span>
+            {reportType === "fiveYear" ? (
+              <span>ขีดจำกัดสูงสุดในปีเดี่ยว: <strong>50.00 mSv</strong></span>
+            ) : (
+              <span>เกณฑ์เฝ้าระวังรายรอบ: <strong>{department.alertLimit.toFixed(2)} mSv</strong></span>
+            )}
           </div>
           <div className="flex items-center gap-2 font-medium">
             <Printer className="size-4 text-slate-500" />
@@ -368,88 +550,160 @@ export default function ReportViewer({ department, employees, records, databaseS
         </div>
 
         {/* Formal Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs text-slate-800 border border-slate-300 border-collapse">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-300 text-slate-900 font-bold">
-                <th className="p-2 border border-slate-300 text-center uppercase tracking-wider text-[10px]" width="50">ลำดับ</th>
-                <th className="p-2 border border-slate-300 text-center uppercase tracking-wider text-[10px]" width="120">Badge ID</th>
-                <th className="p-2 border border-slate-300 text-left uppercase tracking-wider text-[10px]">ชื่อ-นามสกุล บุคลากร</th>
-                <th className="p-2 border border-slate-300 text-left uppercase tracking-wider text-[10px]">ตำแหน่งงาน</th>
-                <th className="p-2 border border-slate-300 text-right uppercase tracking-wider text-[10px]" width="160">
-                  Hp(10) Deep (mSv)
-                  {calculationMode === "sum" && <span className="block text-[9px] text-slate-500 font-medium">(รวมสะสม)</span>}
-                  {calculationMode === "avg" && <span className="block text-[9px] text-slate-500 font-medium">(ค่าเฉลี่ยต่อรอบ)</span>}
-                  {calculationMode === "both" && <span className="block text-[9px] text-slate-500 font-medium">(สะสม / เฉลี่ย)</span>}
-                </th>
-                <th className="p-2 border border-slate-300 text-right uppercase tracking-wider text-[10px]" width="160">
-                  Hp(0.07) Shallow (mSv)
-                  {calculationMode === "sum" && <span className="block text-[9px] text-slate-500 font-medium">(รวมสะสม)</span>}
-                  {calculationMode === "avg" && <span className="block text-[9px] text-slate-500 font-medium">(ค่าเฉลี่ยต่อรอบ)</span>}
-                  {calculationMode === "both" && <span className="block text-[9px] text-slate-500 font-medium">(สะสม / เฉลี่ย)</span>}
-                </th>
-                <th className="p-2 border border-slate-300 text-center uppercase tracking-wider text-[10px]" width="110">สถานะประเมิน</th>
-                <th className="p-2 border border-slate-300 text-left uppercase tracking-wider text-[10px]">หมายเหตุ</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {reportRows.map((row, index) => (
-                <tr key={row.employee.id} className="hover:bg-slate-50/50">
-                  <td className="p-2 border border-slate-300 text-center font-mono">{index + 1}</td>
-                  <td className="p-2 border border-slate-300 text-center font-mono font-bold">{row.badgeIds}</td>
-                  <td className="p-2 border border-slate-300 font-bold text-slate-900">{row.employee.name}</td>
-                  <td className="p-2 border border-slate-300 text-slate-600 font-medium">{row.employee.position}</td>
-                  <td className="p-2 border border-slate-300 text-right">
-                    {calculationMode === "sum" && (
-                      <span className="font-black text-slate-950">{row.deepDose.toFixed(3)}</span>
-                    )}
-                    {calculationMode === "avg" && (
-                      <span className="font-black text-slate-950">{row.avgDeep.toFixed(3)}</span>
-                    )}
-                    {calculationMode === "both" && (
-                      <div className="space-y-0.5">
-                        <div className="font-black text-slate-950">{row.deepDose.toFixed(3)}</div>
-                        <div className="text-[10px] text-slate-500 font-medium">เฉลี่ย: {row.avgDeep.toFixed(3)}</div>
-                      </div>
-                    )}
-                  </td>
-                  <td className="p-2 border border-slate-300 text-right">
-                    {calculationMode === "sum" && (
-                      <span className="font-bold text-slate-600">{row.shallowDose.toFixed(3)}</span>
-                    )}
-                    {calculationMode === "avg" && (
-                      <span className="font-bold text-slate-600">{row.avgShallow.toFixed(3)}</span>
-                    )}
-                    {calculationMode === "both" && (
-                      <div className="space-y-0.5">
-                        <div className="font-bold text-slate-700">{row.shallowDose.toFixed(3)}</div>
-                        <div className="text-[10px] text-slate-400 font-medium">เฉลี่ย: {row.avgShallow.toFixed(3)}</div>
-                      </div>
-                    )}
-                  </td>
-                  <td className="p-2 border border-slate-300 text-center font-bold">
-                    {row.status === "danger" ? (
-                      <span className="text-red-600">⚠️ เกินกำหนด</span>
-                    ) : row.status === "watch" ? (
-                      <span className="text-amber-600">⚠️ เฝ้าระวังสูง</span>
-                    ) : (
-                      <span className="text-emerald-700">✓ ปลอดภัย</span>
-                    )}
-                  </td>
-                  <td className="p-2 border border-slate-300 text-slate-500 font-medium italic">
-                    {row.remarks}
-                  </td>
+        {reportType === "fiveYear" ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-slate-800 border border-slate-300 border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-300 text-slate-900 font-bold">
+                  <th className="p-2 border border-slate-300 text-center uppercase tracking-wider text-[10px]" width="40">ลำดับ</th>
+                  <th className="p-2 border border-slate-300 text-center uppercase tracking-wider text-[10px]" width="80">Badge ID</th>
+                  <th className="p-2 border border-slate-300 text-left uppercase tracking-wider text-[10px]" width="140">ชื่อ-นามสกุล บุคลากร</th>
+                  <th className="p-2 border border-slate-300 text-left uppercase tracking-wider text-[10px]" width="110">ตำแหน่งงาน</th>
+                  {yearsList.map((yr) => (
+                    <th key={yr} className="p-1 border border-slate-300 text-right uppercase tracking-wider text-[9px] font-bold" width="80">
+                      พ.ศ. {yr}
+                      <span className="block text-[8px] text-slate-500 font-normal">Deep (Shallow)</span>
+                    </th>
+                  ))}
+                  <th className="p-2 border border-slate-300 text-right uppercase tracking-wider text-[10px]" width="90">
+                    รวมสะสม 5 ปี
+                    <span className="block text-[8px] text-slate-500 font-normal">Deep (Shallow)</span>
+                  </th>
+                  <th className="p-2 border border-slate-300 text-center uppercase tracking-wider text-[10px]" width="90">สถานะประเมิน</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {report5YearRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={6 + yearsList.length} className="p-4 border border-slate-300 text-center text-slate-400 font-medium italic">
+                      ไม่พบข้อมูลบันทึกรังสีสะสมในช่วงเวลา 5 ปีที่เลือก
+                    </td>
+                  </tr>
+                ) : (
+                  report5YearRows.map((row, index) => (
+                    <tr key={row.employee.id} className="hover:bg-slate-50/50">
+                      <td className="p-2 border border-slate-300 text-center font-mono">{index + 1}</td>
+                      <td className="p-2 border border-slate-300 text-center font-mono font-bold text-[10px]">{row.badgeIds}</td>
+                      <td className="p-2 border border-slate-300 font-bold text-slate-900">{row.employee.name}</td>
+                      <td className="p-2 border border-slate-300 text-slate-600 font-medium">{row.employee.position}</td>
+                      {row.yearlyDoses.map((yd) => (
+                        <td key={yd.year} className="p-1 border border-slate-300 text-right font-mono text-[11px]">
+                          <div className="font-bold text-slate-900">{yd.deep.toFixed(3)}</div>
+                          <div className="text-[9px] text-slate-400">({yd.shallow.toFixed(3)})</div>
+                        </td>
+                      ))}
+                      <td className="p-2 border border-slate-300 text-right font-mono font-black text-slate-950 text-[11px] bg-slate-50/50">
+                        <div>{row.totalDeep.toFixed(3)}</div>
+                        <div className="text-[9px] text-slate-500 font-medium">({row.totalShallow.toFixed(3)})</div>
+                      </td>
+                      <td className="p-2 border border-slate-300 text-center font-bold">
+                        {row.status === "danger" ? (
+                          <span className="text-red-600">⚠️ เกินกำหนด</span>
+                        ) : row.status === "watch" ? (
+                          <span className="text-amber-600">⚠️ เฝ้าระวัง</span>
+                        ) : (
+                          <span className="text-emerald-700">✓ ปลอดภัย</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-slate-800 border border-slate-300 border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-300 text-slate-900 font-bold">
+                  <th className="p-2 border border-slate-300 text-center uppercase tracking-wider text-[10px]" width="50">ลำดับ</th>
+                  <th className="p-2 border border-slate-300 text-center uppercase tracking-wider text-[10px]" width="120">Badge ID</th>
+                  <th className="p-2 border border-slate-300 text-left uppercase tracking-wider text-[10px]">ชื่อ-นามสกุล บุคลากร</th>
+                  <th className="p-2 border border-slate-300 text-left uppercase tracking-wider text-[10px]">ตำแหน่งงาน</th>
+                  <th className="p-2 border border-slate-300 text-right uppercase tracking-wider text-[10px]" width="160">
+                    Hp(10) Deep (mSv)
+                    {calculationMode === "sum" && <span className="block text-[9px] text-slate-500 font-medium">(รวมสะสม)</span>}
+                    {calculationMode === "avg" && <span className="block text-[9px] text-slate-500 font-medium">(ค่าเฉลี่ยต่อรอบ)</span>}
+                    {calculationMode === "both" && <span className="block text-[9px] text-slate-500 font-medium">(สะสม / เฉลี่ย)</span>}
+                  </th>
+                  <th className="p-2 border border-slate-300 text-right uppercase tracking-wider text-[10px]" width="160">
+                    Hp(0.07) Shallow (mSv)
+                    {calculationMode === "sum" && <span className="block text-[9px] text-slate-500 font-medium">(รวมสะสม)</span>}
+                    {calculationMode === "avg" && <span className="block text-[9px] text-slate-500 font-medium">(ค่าเฉลี่ยต่อรอบ)</span>}
+                    {calculationMode === "both" && <span className="block text-[9px] text-slate-500 font-medium">(สะสม / เฉลี่ย)</span>}
+                  </th>
+                  <th className="p-2 border border-slate-300 text-center uppercase tracking-wider text-[10px]" width="110">สถานะประเมิน</th>
+                  <th className="p-2 border border-slate-300 text-left uppercase tracking-wider text-[10px]">หมายเหตุ</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {reportRows.map((row, index) => (
+                  <tr key={row.employee.id} className="hover:bg-slate-50/50">
+                    <td className="p-2 border border-slate-300 text-center font-mono">{index + 1}</td>
+                    <td className="p-2 border border-slate-300 text-center font-mono font-bold">{row.badgeIds}</td>
+                    <td className="p-2 border border-slate-300 font-bold text-slate-900">{row.employee.name}</td>
+                    <td className="p-2 border border-slate-300 text-slate-600 font-medium">{row.employee.position}</td>
+                    <td className="p-2 border border-slate-300 text-right">
+                      {calculationMode === "sum" && (
+                        <span className="font-black text-slate-950">{row.deepDose.toFixed(3)}</span>
+                      )}
+                      {calculationMode === "avg" && (
+                        <span className="font-black text-slate-950">{row.avgDeep.toFixed(3)}</span>
+                      )}
+                      {calculationMode === "both" && (
+                        <div className="space-y-0.5">
+                          <div className="font-black text-slate-950">{row.deepDose.toFixed(3)}</div>
+                          <div className="text-[10px] text-slate-500 font-medium">เฉลี่ย: {row.avgDeep.toFixed(3)}</div>
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-2 border border-slate-300 text-right">
+                      {calculationMode === "sum" && (
+                        <span className="font-bold text-slate-600">{row.shallowDose.toFixed(3)}</span>
+                      )}
+                      {calculationMode === "avg" && (
+                        <span className="font-bold text-slate-600">{row.avgShallow.toFixed(3)}</span>
+                      )}
+                      {calculationMode === "both" && (
+                        <div className="space-y-0.5">
+                          <div className="font-bold text-slate-700">{row.shallowDose.toFixed(3)}</div>
+                          <div className="text-[10px] text-slate-400 font-medium">เฉลี่ย: {row.avgShallow.toFixed(3)}</div>
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-2 border border-slate-300 text-center font-bold">
+                      {row.status === "danger" ? (
+                        <span className="text-red-600">⚠️ เกินกำหนด</span>
+                      ) : row.status === "watch" ? (
+                        <span className="text-amber-600">⚠️ เฝ้าระวังสูง</span>
+                      ) : (
+                        <span className="text-emerald-700">✓ ปลอดภัย</span>
+                      )}
+                    </td>
+                    <td className="p-2 border border-slate-300 text-slate-500 font-medium italic">
+                      {row.remarks}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         {/* Legal Disclaimer / Safety Standard Notes */}
         <div className="space-y-1 text-[11px] text-slate-500 leading-relaxed border-t border-slate-200 pt-3">
           <p className="font-bold text-slate-700 uppercase tracking-wider text-[10px]">เกณฑ์การประเมินและการควบคุมความปลอดภัยทางรังสี (Radiation Safety Standards):</p>
-          <p>1. ปริมาณรังสีสะสมจำกัดรายบุคคลสูงสุดต้องไม่เกิน 20.0 mSv ในระยะเวลา 1 ปีปฏิทิน (Hp(10) &lt; 20 mSv/year)</p>
-          <p>2. สำหรับการประเมินรายรอบ ระดับรังสีเฝ้าระวัง (Alert Level) ตั้งไว้ที่ {department.alertLimit} mSv หากตรวจพบปริมาณเกิน เจ้าหน้าที่ต้องส่งรายงานต่อ RSO เพื่อตรวจสอบ</p>
+          {reportType === "fiveYear" ? (
+            <>
+              <p>1. ขีดจำกัดปริมาณรังสีสะสมสูงสุดสำหรับผู้ปฏิบัติงานรังสีต้องไม่เกิน 100.0 mSv ในระยะเวลา 5 ปีติดต่อกัน (เฉลี่ยไม่เกิน 20.0 mSv ต่อปี)</p>
+              <p>2. ปริมาณรังสีในแต่ละปีเดี่ยวจะต้องไม่เกิน 50.0 mSv หากพบบุคลากรได้รับรังสีเกิน {department.annualLimit} mSv ในรอบปีใด ๆ RSO จะจัดทำรายงานเพื่อปรับปรุงสภาวะการปฏิบัติงานและวางแผนควบคุมทันที</p>
+            </>
+          ) : (
+            <>
+              <p>1. ปริมาณรังสีสะสมจำกัดรายบุคคลสูงสุดต้องไม่เกิน {department.annualLimit.toFixed(1)} mSv ในระยะเวลา 1 ปีปฏิทิน (Hp(10) &lt; {department.annualLimit} mSv/year)</p>
+              <p>2. สำหรับการประเมินรายรอบ ระดับรังสีเฝ้าระวัง (Alert Level) ตั้งไว้ที่ {department.alertLimit} mSv หากตรวจพบปริมาณเกิน เจ้าหน้าที่ต้องส่งรายงานต่อ RSO เพื่อตรวจสอบ</p>
+            </>
+          )}
         </div>
 
         {/* Sign-Off Footer section */}
