@@ -23,6 +23,8 @@ interface SettingsManagerProps {
   onSelectDepartment: (id: string) => void;
   onAddDepartment: (dept: Omit<Department, "id">) => void;
   onUpdateDepartment: (dept: Department) => void;
+  onDeleteDepartment: (id: string) => void;
+  onResetDatabase: () => void;
   databaseState: DatabaseState;
   onImportState: (state: DatabaseState) => void;
 }
@@ -33,6 +35,8 @@ export default function SettingsManager({
   onSelectDepartment,
   onAddDepartment,
   onUpdateDepartment,
+  onDeleteDepartment,
+  onResetDatabase,
   databaseState,
   onImportState,
 }: SettingsManagerProps) {
@@ -190,16 +194,34 @@ export default function SettingsManager({
                     setEditRsoPosition(d.rsoPosition);
                     setEditSignatoryTitle(d.signatoryTitle);
                   }}
-                  className={`p-2.5 rounded-lg border cursor-pointer transition-all ${
+                  className={`p-2.5 rounded-lg border cursor-pointer transition-all flex justify-between items-center group/item ${
                     isActive
                       ? "bg-blue-600 text-white border-blue-600 shadow-sm"
                       : "bg-slate-50 text-slate-800 hover:bg-slate-100 border-slate-200"
                   }`}
                 >
-                  <h4 className="font-bold text-xs">{d.name}</h4>
-                  <p className={`text-[10px] mt-0.5 font-medium ${isActive ? "text-blue-100" : "text-slate-500"}`}>
-                    {d.hospitalName}
-                  </p>
+                  <div>
+                    <h4 className="font-bold text-xs">{d.name}</h4>
+                    <p className={`text-[10px] mt-0.5 font-medium ${isActive ? "text-blue-100" : "text-slate-500"}`}>
+                      {d.hospitalName}
+                    </p>
+                  </div>
+                  {departments.length > 1 && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteDepartment(d.id);
+                      }}
+                      className={`p-1.5 rounded transition-colors cursor-pointer ${
+                        isActive 
+                          ? "text-blue-100 hover:bg-blue-700 hover:text-white" 
+                          : "text-slate-400 hover:bg-red-50 hover:text-red-600 md:opacity-0 md:group-hover\/item:opacity-100"
+                      }`}
+                      title="ลบหน่วยงานนี้"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -304,6 +326,26 @@ export default function SettingsManager({
               onChange={handleImportFile}
               className="hidden"
             />
+          </div>
+        </div>
+
+        {/* Storage Management Card */}
+        <div className="bg-white rounded-xl border border-red-100 shadow-sm p-4 space-y-3">
+          <h2 className="text-xs font-bold text-red-700 flex items-center gap-2 uppercase tracking-wider">
+            <Trash2 className="size-4 text-red-600" />
+            การจัดการพื้นที่เก็บข้อมูล
+          </h2>
+          <p className="text-[11px] text-slate-500 leading-relaxed font-medium">
+            ข้อมูลทั้งหมดถูกบันทึกอย่างปลอดภัยในเบราว์เซอร์ของท่าน หากคุณต้องการเริ่มต้นบันทึกข้อมูลใหม่ทั้งหมดหรือล้างแคชเพื่อคืนพื้นที่ว่าง ท่านสามารถล้างประวัติข้อมูลทั้งหมดกลับสู่ค่าเริ่มต้นได้
+          </p>
+          <div className="pt-2 border-t border-slate-100">
+            <button
+              onClick={onResetDatabase}
+              className="w-full py-2 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 hover:text-red-800 text-[11px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Trash2 className="size-3.5" />
+              ล้างประวัติข้อมูลทั้งหมด (Factory Reset)
+            </button>
           </div>
         </div>
       </div>

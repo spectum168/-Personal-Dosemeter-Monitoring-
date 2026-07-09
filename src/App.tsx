@@ -192,6 +192,37 @@ export default function App() {
     setSelectedEmployeeId(null);
   };
 
+  // Handler: Delete department (and all associated employees & records)
+  const handleDeleteDepartment = (id: string) => {
+    if (departments.length <= 1) {
+      alert("ไม่สามารถลบแผนกได้ เนื่องจากต้องมีอย่างน้อย 1 แผนกในระบบ");
+      return;
+    }
+    
+    if (window.confirm("คุณต้องการลบหน่วยงานนี้พร้อมประวัติบุคลากรและประวัติรังสีทั้งหมดใช่หรือไม่? (การดำเนินการนี้ไม่สามารถย้อนกลับได้)")) {
+      setDbState((prev) => {
+        const remainingDepts = prev.departments.filter((d) => d.id !== id);
+        const nextActiveId = remainingDepts[0].id;
+        
+        return {
+          departments: remainingDepts,
+          activeDepartmentId: nextActiveId,
+          employees: prev.employees.filter((e) => e.departmentId !== id),
+          records: prev.records.filter((r) => r.departmentId !== id),
+        };
+      });
+      setSelectedEmployeeId(null);
+    }
+  };
+
+  // Handler: Reset database to initial templates/seeds
+  const handleResetDatabase = () => {
+    if (window.confirm("⚠️ คำเตือน: คุณต้องการล้างข้อมูลทั้งหมดในระบบและกลับคืนสู่ค่าเริ่มต้น (Factory Reset) ใช่หรือไม่?\n\nข้อมูลหน่วยงาน พนักงาน และประวัติรังสีที่คุณบันทึกไว้ทั้งหมดจะถูกลบออกทั้งหมดอย่างถาวร!")) {
+      localStorage.removeItem("radiation_dose_tracker_db");
+      window.location.reload();
+    }
+  };
+
   // Helper: jump to personnel profile from alert list
   const handleSelectEmployeeAndNavigate = (empId: string) => {
     setSelectedEmployeeId(empId);
@@ -390,6 +421,8 @@ export default function App() {
                     onSelectDepartment={handleSelectDepartment}
                     onAddDepartment={handleAddDepartment}
                     onUpdateDepartment={handleUpdateDepartment}
+                    onDeleteDepartment={handleDeleteDepartment}
+                    onResetDatabase={handleResetDatabase}
                     databaseState={dbState}
                     onImportState={handleImportState}
                   />
